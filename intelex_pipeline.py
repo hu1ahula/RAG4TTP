@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from openai import AzureOpenAI, OpenAI
 
-# Configure argument parser
+# 配置命令行参数
 def parse_args():
     parser = argparse.ArgumentParser(description="IntelEx Pipeline for MITRE Technique Extraction and Validation")
     parser.add_argument("--input", type=str, required=True, help="Input JSON file with sentences to process")
@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--local-url", type=str, default="http://localhost:9002/v1", help="URL for local LLM server")
     return parser.parse_args()
 
-# Configure logging
+# 配置日志（控制台 + 文件）
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     """Set up logging with file and console output"""
     log_filename = f"intelex_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -56,7 +56,7 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
 
 @dataclass
 class PipelineConfig:
-    """Configuration parameters for the pipeline"""
+    """流水线运行参数。"""
     input_file: str
     output_file: str 
     kb_file: str
@@ -69,7 +69,7 @@ class PipelineConfig:
     local_url: str
 
 class LLMClient:
-    """Wrapper class for different LLM API clients"""
+    """统一封装 Azure/OpenAI/本地兼容接口。"""
     
     def __init__(self, api_type: str, model: str, config: PipelineConfig, logger: logging.Logger):
         self.api_type = api_type
@@ -79,7 +79,7 @@ class LLMClient:
         self.client = self._initialize_client()
         
     def _initialize_client(self) -> Union[AzureOpenAI, OpenAI]:
-        """Initialize the appropriate client based on API type"""
+        """根据 api_type 初始化不同客户端。"""
         if self.api_type == "azure":
             api_key = os.getenv("AZURE_OPENAI_KEY")
             endpoint = os.getenv("AZURE_OPENAI_API_ENDPOINT")
@@ -111,7 +111,7 @@ class LLMClient:
             raise ValueError(f"Unsupported API type: {self.api_type}")
     
     def validate_technique(self, text: str, technique: str, description: str) -> bool:
-        """Use LLM to validate if a technique exists in the given text"""
+        """让 LLM 判定某个 technique 是否在文本中出现。"""
         start_time = time.time()
         
         background = """Background:
@@ -147,7 +147,7 @@ Below is the instruction to finish the task:
             elapsed_time = time.time() - start_time
             self.logger.debug(f"LLM call for technique {technique} completed in {elapsed_time:.2f}s")
             
-            # Parse response to determine if technique exists
+            # 这里用简单字符串规则解析结果，鲁棒性一般但速度快
             if "YES" in response_content and "NO" not in response_content:
                 return True
             return False
@@ -158,7 +158,7 @@ Below is the instruction to finish the task:
             raise
 
 class MitreTechniqueExtractor:
-    """Extract and validate MITRE ATT&CK techniques from text"""
+    """MITRE 技术候选抽取 + 基于 KB 描述的二次验证。"""
     
     def __init__(self, config: PipelineConfig, logger: logging.Logger):
         self.config = config
@@ -172,7 +172,7 @@ class MitreTechniqueExtractor:
         )
         
     def _load_knowledge_base(self) -> Dict:
-        """Load MITRE knowledge base from JSON file"""
+        """加载 MITRE 知识库 JSON。"""
         try:
             with open(self.config.kb_file, "r") as fp:
                 kb = json.load(fp)
@@ -183,7 +183,7 @@ class MitreTechniqueExtractor:
             raise
             
     def extract_techniques(self, text: str) -> List[str]:
-        """Extract potential MITRE techniques using regex pattern"""
+        """用正则抽取文本中的潜在技术 ID。"""
         mitre_pattern = r'T\d{4}(?:\.\d{3})?'
         matches = re.findall(mitre_pattern, text)
         unique_matches = list(set(matches))
@@ -191,12 +191,13 @@ class MitreTechniqueExtractor:
         return unique_matches
     
     def validate_technique(self, text: str, technique: str) -> Optional[str]:
-        """Validate if a technique exists in the text using LLM"""
+        """结合 KB 描述与 LLM 判定该技术是否真实存在。"""
         try:
             if technique not in self.mitre_kb:
                 self.logger.warning(f"Technique {technique} not found in knowledge base")
                 return None
                 
+            # 使用该技术在 KB 中的描述，辅助 LLM 做语义匹配判断
             description = self.mitre_kb[technique]['description']
             is_valid = self.llm_client.validate_technique(text, technique, description)
             
@@ -212,20 +213,59 @@ class MitreTechniqueExtractor:
             return None
             
     def process_technique_item(self, args: Tuple[str, str]) -> Optional[str]:
-        """Process a single technique (for parallel execution)"""
+        """并发 worker：处理单个 technique 的验证任务。"""
         text, technique = args
         return self.validate_technique(text, technique)
 
 class IntelExPipeline:
-    """Main pipeline for processing CTI data"""
+    """
+    IntelEx 主流程控制器：读入 -> 生成候选 -> 并发验证 -> 输出。
+
+    该类对外最关键的方法是 `run()`，其职责是：
+    1) 读取输入样本并转换为内部统一结构；
+    2) 合并候选技术（上游预测 + instruction 正则抽取）；
+    3) 并发调用验证器过滤伪阳性；
+    4) 以 JSONL 方式落盘，支持中断后续跑。
+    """
     
     def __init__(self, config: PipelineConfig, logger: logging.Logger):
+        """
+        初始化流水线实例。
+
+        :param config: 运行配置（输入输出路径、模型、并发数等）
+        :param logger: 日志对象
+        :return: None
+        """
         self.config = config
         self.logger = logger
         self.extractor = MitreTechniqueExtractor(config, logger)
         
     def _load_input_data(self) -> List[Dict]:
-        """Load input data from JSON file"""
+        """
+        读取输入 JSON，并转换成流水线内部使用的统一结构。
+
+        输入文件中每个样本通常包含：
+        - instruction: 包含提示词/上下文（可能含 MITRE ID）
+        - input: 原始 CTI 句子
+        - gold: 标注技术列表
+        - predicted: 上游模型给出的候选技术（可为空）
+
+        转换后每条样本结构：
+        - sentence: 原始待判定文本（来自 input）
+        - gold: 标注真值
+        - gpt4_techs: 来自 predicted 的候选技术
+        - rag_techs: 从 instruction 正则抽取得到的候选技术
+
+        :return: List[Dict]，样例：
+        [
+          {
+            "sentence": "The malware uses PowerShell to fetch payloads.",
+            "gold": ["T1059.001", "T1105"],
+            "gpt4_techs": ["T1059.001"],
+            "rag_techs": ["T1059.001", "T1105", "T1027"]
+          }
+        ]
+        """
         try:
             with open(self.config.input_file, "r") as f:
                 sentences = json.load(f)
@@ -239,7 +279,9 @@ class IntelExPipeline:
                 obj = {
                     "sentence": sentence['input'],
                     "gold": sentence['gold'],
+                    # gpt4_techs: 已有预测候选（来自上游）
                     "gpt4_techs": sentence['predicted'],
+                    # rag_techs: 从 instruction 中正则抽取到的候选
                     "rag_techs": self.extractor.extract_techniques(text=sentence['instruction']),
                 }
                 raw_sentences.append(obj)
@@ -251,7 +293,19 @@ class IntelExPipeline:
             raise
             
     def _load_processed_data(self) -> List[str]:
-        """Load already processed sentences from output file"""
+        """
+        从输出 JSONL 中读取已经处理过的 sentence，用于 `--continue-from` 断点续跑。
+
+        读取逻辑：
+        - 若未开启 continue_from，或输出文件不存在，直接返回空列表；
+        - 否则逐行解析 JSONL，提取每行的 sentence 字段。
+
+        :return: 已处理 sentence 列表，样例：
+        [
+          "The malware uses PowerShell to fetch payloads.",
+          "Attackers modified registry keys for persistence."
+        ]
+        """
         processed = []
         
         if not self.config.continue_from or not os.path.exists(self.config.output_file):
@@ -273,7 +327,20 @@ class IntelExPipeline:
             return []
             
     def run(self) -> None:
-        """Run the pipeline to extract and validate techniques"""
+        """
+        执行整条 IntelEx 流水线并将结果写入 JSONL。
+
+        处理步骤：
+        1) 加载并规范化输入样本；
+        2) 读取已处理样本（可选，断点续跑）；
+        3) 对每条样本合并候选技术并并发验证；
+        4) 将每条结果追加写入输出文件。
+
+        注意：本函数返回值为 None，结果通过文件副作用产出。
+
+        输出文件每行样例（JSONL）：
+        {"sentence":"The malware uses PowerShell to fetch payloads.","gold":["T1059.001","T1105"],"predicted":["T1059.001","T1105"]}
+        """
         start_time = time.time()
         self.logger.info("Starting IntelEx Pipeline")
         
@@ -284,7 +351,7 @@ class IntelExPipeline:
             # Load already processed data if continuing
             processed = self._load_processed_data()
             
-            # Process sentences
+            # 逐句处理；句内 technique 验证会并发执行
             processed_count = 0
             with futures.ThreadPoolExecutor(max_workers=self.config.threads) as executor:
                 self.logger.info(f"Started ThreadPoolExecutor with {self.config.threads} workers")
@@ -294,17 +361,17 @@ class IntelExPipeline:
                         self.logger.debug(f"Skipping already processed sentence")
                         continue
                         
-                    # Combine techniques from both sources
+                    # 合并两路候选：上游预测 + instruction 正则抽取
                     techs = list(set(sentence['gpt4_techs']).union(set(sentence['rag_techs'])))
                     self.logger.info(f"Processing sentence with {len(techs)} unique techniques")
                     
-                    # Prepare arguments for parallel processing
+                    # 构造并发任务参数（同一句子，不同 technique）
                     args_list = [(sentence['sentence'], tech) for tech in techs]
                     
-                    # Process techniques in parallel
+                    # 并发验证每个候选技术
                     results = list(executor.map(self.extractor.process_technique_item, args_list))
                     
-                    # Filter out None values and get valid techniques
+                    # 过滤掉验证失败/异常项，仅保留确认存在的技术
                     valid_techs = [tech for tech in results if tech is not None]
                     self.logger.info(f"Found {len(valid_techs)} valid techniques out of {len(techs)} candidates")
                     
@@ -315,7 +382,7 @@ class IntelExPipeline:
                         "predicted": valid_techs
                     }
                     
-                    # Write results to output file
+                    # 以 JSONL 逐行追加，便于中断恢复
                     try:
                         with open(self.config.output_file, "a") as f:
                             f.write(json.dumps(obj) + "\n")
@@ -333,11 +400,11 @@ class IntelExPipeline:
             raise
 
 def main():
-    """Main entry point for the pipeline"""
+    """程序入口。"""
     args = parse_args()
     logger = setup_logging(args.log_level)
     
-    # Create configuration
+    # 汇总参数为配置对象，便于在各模块间传递
     config = PipelineConfig(
         input_file=args.input,
         output_file=args.output,
@@ -351,7 +418,7 @@ def main():
         local_url=args.local_url
     )
     
-    # Initialize and run pipeline
+    # 初始化并执行
     pipeline = IntelExPipeline(config, logger)
     pipeline.run()
 
