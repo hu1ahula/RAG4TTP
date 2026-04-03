@@ -5,6 +5,7 @@ from tqdm import tqdm
 import re
 import time
 import copy
+from pathlib import Path
 from openai import OpenAI
 import glob
 from libs import resources as res, rank
@@ -200,6 +201,82 @@ def get_dict_from_examples(examples, df_new):
         readable_list.append({"query":query, "true_labels": true_labels,"pred_labels_rankings": pred_labels_ranking, "docs":docs})
     return readable_list
 
+
+def build_stage1_reranker(name: str):
+    """根据名称构造第一阶段检索器。"""
+    name = name.lower()
+    if name == "bm25":
+        return rank.construct_bm25()
+    if name == "rm3":
+        return rank.construct_rm3()
+    if name == "ql":
+        return rank.construct_ql()
+    if name == "bm25plus":
+        return rank.construct_bm25plus()
+    raise ValueError(f"Unsupported retriever: {name}")
+
+
+def rrf_fuse_examples(primary_examples, secondary_examples, n_hits=100, rrf_k=60):
+    """
+    使用 Reciprocal Rank Fusion (RRF) 融合两路检索结果。
+    分数公式：sum(1 / (rrf_k + rank))
+    """
+    fused_examples = copy.deepcopy(primary_examples)
+    for idx, (p_ex, s_ex) in enumerate(zip(primary_examples, secondary_examples)):
+        p_docs = p_ex.documents
+        s_docs = s_ex.documents
+        p_rank = {d.metadata["docid"]: i + 1 for i, d in enumerate(p_docs)}
+        s_rank = {d.metadata["docid"]: i + 1 for i, d in enumerate(s_docs)}
+        doc_map = {d.metadata["docid"]: d for d in p_docs}
+        for d in s_docs:
+            if d.metadata["docid"] not in doc_map:
+                doc_map[d.metadata["docid"]] = d
+
+        all_docids = set(p_rank.keys()).union(set(s_rank.keys()))
+        fused_scores = {}
+        for docid in all_docids:
+            score = 0.0
+            if docid in p_rank:
+                score += 1.0 / (rrf_k + p_rank[docid])
+            if docid in s_rank:
+                score += 1.0 / (rrf_k + s_rank[docid])
+            fused_scores[docid] = score
+
+        ranked_docids = sorted(all_docids, key=lambda d: fused_scores[d], reverse=True)
+        fused_examples[idx].documents = [doc_map[d] for d in ranked_docids[:n_hits]]
+    return fused_examples
+
+
+def build_corpus_from_summaries(summaries_dir: Path, mitre_kb_json: Path) -> pd.DataFrame:
+    """
+    当 aggregated.sanitized.csv 不存在时，从技术摘要文件构建检索语料。
+    每个 technique 生成一条文档：text = "{tech_name} {summary}"。
+    """
+    name_map = {}
+    if mitre_kb_json.exists():
+        with mitre_kb_json.open() as f:
+            kb = json.load(f)
+        name_map = {k: v.get("name", k) for k, v in kb.items()}
+
+    rows = []
+    for fp in sorted(summaries_dir.glob("*.json")):
+        tech_id = fp.stem
+        with fp.open() as f:
+            data_response = json.load(f)
+        summary = data_response["choices"][0]["message"]["content"]
+        tech_name = name_map.get(tech_id, tech_id)
+        rows.append(
+            {
+                "tech_id": tech_id,
+                "tech_name": tech_name,
+                "text": f"{tech_name} {summary}",
+            }
+        )
+    if not rows:
+        raise ValueError(f"No summary files found in: {summaries_dir}")
+    return pd.DataFrame(rows)
+
+
 def main():
     """主入口：BM25 召回 + RankGPT 重排 + 结果落盘。"""
     parser = argparse.ArgumentParser(description="Run BM25 and RankGPT ranking pipeline.")
@@ -207,42 +284,85 @@ def main():
     parser.add_argument("--output_file", required=True, help="Path to save the output JSON file.")
     parser.add_argument("--api_key", required=True, help="DeepSeek API key.")
     parser.add_argument("--bm25_cache_file", required=True, help="Path to cache BM25 results.")
+    parser.add_argument("--secondary_cache_file", default="", help="Optional cache file for secondary retriever in hybrid mode.")
     parser.add_argument("--model_name", default="deepseek-chat", help="Model name for RankGPT.")
     parser.add_argument("--bm25_top_k", type=int, default=100, help="Number of documents to retrieve with BM25.")
+    parser.add_argument("--stage1_mode", choices=["bm25", "hybrid"], default="bm25", help="Stage-1 retrieval mode.")
+    parser.add_argument("--secondary_retriever", choices=["rm3", "ql", "bm25plus"], default="rm3", help="Secondary retriever for hybrid mode.")
+    parser.add_argument("--rrf_k", type=int, default=60, help="RRF k parameter for hybrid fusion.")
+    parser.add_argument("--mitre_csv_path", default="data/mitre/aggregated.sanitized.csv", help="Path to MITRE aggregated CSV used by load_mitre_kb.")
+    parser.add_argument("--mitre_kb_json", default="../assets/mitre_kb.json", help="Path to assets/mitre_kb.json for fallback corpus build.")
+    parser.add_argument("--corpus_summaries_dir", default="corpus_summaries", help="Directory of per-technique summary JSON files.")
     parser.add_argument("--rankgpt_rank_end", type=int, default=40, help="Rank end for RankGPT sliding window.")
     parser.add_argument("--rankgpt_window_size", type=int, default=40, help="Window size for RankGPT sliding window.")
     parser.add_argument("--rankgpt_step", type=int, default=20, help="Step for RankGPT sliding window.")
     args = parser.parse_args()
     
+    print("[Init] Parsing arguments done.")
+    print(f"[Init] stage1_mode={args.stage1_mode}, bm25_top_k={args.bm25_top_k}, rankgpt_rank_end={args.rankgpt_rank_end}")
+
     # NLTK 分词资源（某些环境首次运行需要下载）
+    print("[Init] Ensuring NLTK resource: punkt")
     nltk.download('punkt')
+    print("[Init] NLTK ready.")
 
     print("Loading corpus and summaries...")
-    # 1) 读取 MITRE 语料并按技术聚合，作为 BM25 检索库
-    dataset = res.load_mitre_kb()
-    corpus_df = pd.DataFrame([{
-        'tech_id': tech_id,
-        'text': name + ' ' + ' '.join(g['text'].values),
-        'tech_name': name,
-    } for (tech_id, name), g in dataset.groupby(['tech_id', 'tech_name'])])
+    script_dir = Path(__file__).resolve().parent
+    csv_path = Path(args.mitre_csv_path)
+    if not csv_path.is_absolute():
+        csv_path = (Path.cwd() / csv_path).resolve()
+    summaries_dir = Path(args.corpus_summaries_dir)
+    if not summaries_dir.is_absolute():
+        summaries_dir = (Path.cwd() / summaries_dir).resolve()
+    if not summaries_dir.exists():
+        # 兼容从仓库根目录执行：回退到 rag/corpus_summaries
+        summaries_dir = (script_dir / "corpus_summaries").resolve()
+    mitre_kb_json = Path(args.mitre_kb_json)
+    if not mitre_kb_json.is_absolute():
+        mitre_kb_json = (Path.cwd() / mitre_kb_json).resolve()
+    if not mitre_kb_json.exists():
+        # 兼容从 rag/ 目录执行：默认 ../assets/mitre_kb.json
+        mitre_kb_json = (script_dir.parent / "assets" / "mitre_kb.json").resolve()
+
+    # 1) 构建 Stage-1 检索语料：优先 CSV，不存在则用 summaries 回退
+    if csv_path.exists():
+        dataset = res.load_mitre_kb(path=str(csv_path))
+        print(f"[Corpus] Loaded raw rows from CSV: {len(dataset)}")
+        corpus_df = pd.DataFrame([{
+            'tech_id': tech_id,
+            'text': name + ' ' + ' '.join(g['text'].values),
+            'tech_name': name,
+        } for (tech_id, name), g in dataset.groupby(['tech_id', 'tech_name'])])
+        print(f"Loaded corpus from CSV: {csv_path}")
+    else:
+        print(f"CSV not found ({csv_path}), fallback to summaries corpus build.")
+        corpus_df = build_corpus_from_summaries(summaries_dir, mitre_kb_json)
+        print(f"Built corpus from summaries: {summaries_dir} ({len(corpus_df)} docs)")
+    print(f"[Corpus] Final corpus docs: {len(corpus_df)}")
 
     # 2) 读取每个技术的摘要文本，供 RankGPT 重排时作为 passage 内容
-    json_files = glob.glob("corpus_summaries/*.json")
+    json_files = glob.glob(str(summaries_dir / "*.json"))
     all_summaries = {}
     for i in json_files:
         with open(i) as f:
             data_response = json.load(f)
             all_summaries[i.split("/")[-1].split(".json")[0]] = data_response["choices"][0]["message"]["content"]
+    print(f"[Summaries] Loaded {len(all_summaries)} summaries from {summaries_dir}")
     
     print(f"Loading queries from {args.input_file}...")
     # 输入 TSV 需要包含 query 与 tech_id 两列
     queries_df = pd.read_csv(args.input_file, sep='\t')
     queries_df['tech_id'] = queries_df['tech_id'].apply(eval)
+    print(f"[Queries] Loaded {len(queries_df)} queries")
 
     texts, _ = rank.get_texts(corpus_df)
-    queries = rank.get_queries(queries_df)
+    print(f"[Stage1] Candidate docs prepared: {len(texts)}")
+    # 显式指定 query 列，避免默认 text 列导致读取错误
+    queries = rank.get_queries(queries_df, text_col='query')
+    print(f"[Stage1] Query objects prepared: {len(queries)}")
 
     examples = [RelevanceExample(query, texts) for query in queries]
+    print(f"[Stage1] RelevanceExample count: {len(examples)}")
 
     def stage1_runner(examples):
         # Stage-1：用 BM25 做初始召回
@@ -250,10 +370,34 @@ def main():
         bm25_eval = StepEvaluator(bm25_reranker, [], n_hits=args.bm25_top_k)
         return bm25_eval.evaluate(examples)
 
-    print("Running BM25...")
+    print("Running Stage-1 primary retriever: BM25...")
     bm25_examples, _ = rank.load_cache_or_run(args.bm25_cache_file, stage1_runner, examples=examples)
-    
-    bm25_results = get_dict_from_examples(bm25_examples, queries_df)
+    print(f"[Stage1] Primary retriever done. Example count: {len(bm25_examples)}")
+
+    stage1_examples = bm25_examples
+    if args.stage1_mode == "hybrid":
+        if not args.secondary_cache_file:
+            raise ValueError("Hybrid mode requires --secondary_cache_file")
+
+        def secondary_runner(examples):
+            # Stage-1 辅助召回器（RM3/QL/BM25+）
+            secondary = build_stage1_reranker(args.secondary_retriever)
+            secondary_eval = StepEvaluator(secondary, [], n_hits=args.bm25_top_k)
+            return secondary_eval.evaluate(examples)
+
+        print(f"Running Stage-1 secondary retriever: {args.secondary_retriever}...")
+        secondary_examples, _ = rank.load_cache_or_run(
+            args.secondary_cache_file, secondary_runner, examples=examples
+        )
+        print(f"[Stage1] Secondary retriever done. Example count: {len(secondary_examples)}")
+        print(f"Fusing primary + secondary with RRF (k={args.rrf_k})...")
+        stage1_examples = rrf_fuse_examples(
+            bm25_examples, secondary_examples, n_hits=args.bm25_top_k, rrf_k=args.rrf_k
+        )
+        print(f"[Stage1] RRF fusion done. Fused examples: {len(stage1_examples)}")
+
+    bm25_results = get_dict_from_examples(stage1_examples, queries_df)
+    print(f"[Stage1] Converted to readable dict results: {len(bm25_results)}")
 
     print("Preparing data for RankGPT...")
     # 3) 组装 RankGPT 输入 item：query + hits(+true_labels)
@@ -271,11 +415,12 @@ def main():
             rankgpt_item['true_labels'] = item['true_labels']
 
         all_items.append(rankgpt_item)
+    print(f"[RankGPT] Prepared items: {len(all_items)}")
         
     print("Running RankGPT...")
     # 4) Stage-2：对 BM25 前若干候选执行滑窗重排
     all_rankgpt_rankings_final = []
-    for item in tqdm(all_items):
+    for idx, item in enumerate(tqdm(all_items), start=1):
         new_item = sliding_windows(item, 
                                    rank_start=0, 
                                    rank_end=min(len(item['hits']), args.rankgpt_rank_end), 
@@ -290,11 +435,14 @@ def main():
         # 从重排后的 hits 中提取技术 ID 顺序，作为最终预测排序
         new_item["pred_labels_rankings"]=extract_technique_ids(new_item["hits"])
         all_rankgpt_rankings_final.append(new_item)
+        if idx % 200 == 0:
+            print(f"[RankGPT] Progress: {idx}/{len(all_items)} items finished")
 
     print(f"Saving results to {args.output_file}...")
     # 5) 输出 JSON：每个 query 一条记录，含最终技术排名
     with open(args.output_file, 'w') as f:
         json.dump(all_rankgpt_rankings_final, f, indent=4)
+    print(f"[Done] Saved {len(all_rankgpt_rankings_final)} records.")
         
     print("Done.")
 

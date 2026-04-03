@@ -1,0 +1,443 @@
+{
+  "pattern": "datasets/TechniqueRAG-Datasets/**/*rankgpt*.json",
+  "overall": {
+    "analyzable_samples": 17585,
+    "samples_exactly_covered": 13911,
+    "sample_exact_coverage_rate": 0.7910719363093546,
+    "gold_id_count": 19410,
+    "covered_gold_id_count": 15003,
+    "gold_id_recall_in_instruction": 0.772952086553323
+  },
+  "files": [
+    {
+      "file": "datasets/TechniqueRAG-Datasets/test/expert_fewshot_rankgpt_test.json",
+      "total_samples": 157,
+      "analyzable_samples": 157,
+      "samples_exactly_covered": 44,
+      "sample_exact_coverage_rate": 0.2802547770700637,
+      "gold_id_count": 521,
+      "covered_gold_id_count": 229,
+      "gold_id_recall_in_instruction": 0.43953934740882916,
+      "top_missing_ids": [
+        [
+          "T1059",
+          15
+        ],
+        [
+          "T1036",
+          15
+        ],
+        [
+          "T1140",
+          15
+        ],
+        [
+          "T1027",
+          13
+        ],
+        [
+          "T1587.001",
+          11
+        ],
+        [
+          "T1105",
+          9
+        ],
+        [
+          "T1106",
+          9
+        ],
+        [
+          "T1036.005",
+          8
+        ],
+        [
+          "T1119",
+          8
+        ],
+        [
+          "T1005",
+          6
+        ],
+        [
+          "T1074",
+          6
+        ],
+        [
+          "T1082",
+          6
+        ],
+        [
+          "T1204",
+          6
+        ],
+        [
+          "T1068",
+          5
+        ],
+        [
+          "T1041",
+          5
+        ],
+        [
+          "T1102",
+          5
+        ],
+        [
+          "T1570",
+          4
+        ],
+        [
+          "T1083",
+          4
+        ],
+        [
+          "T1057",
+          4
+        ],
+        [
+          "T1027.002",
+          4
+        ]
+      ],
+      "first_miss_example": {
+        "index": 0,
+        "gold_ids": [
+          "T1036.004",
+          "T1036.005",
+          "T1543",
+          "T1543.003",
+          "T1569.002"
+        ],
+        "instruction_ids": [
+          "T1543",
+          "T1543.003",
+          "T1569.002"
+        ],
+        "missing_ids": [
+          "T1036.004",
+          "T1036.005"
+        ]
+      }
+    },
+    {
+      "file": "datasets/TechniqueRAG-Datasets/test/procedures_fewshot_rankgpt_test.json",
+      "total_samples": 1767,
+      "analyzable_samples": 1767,
+      "samples_exactly_covered": 1611,
+      "sample_exact_coverage_rate": 0.9117147707979627,
+      "gold_id_count": 1775,
+      "covered_gold_id_count": 1619,
+      "gold_id_recall_in_instruction": 0.9121126760563381,
+      "top_missing_ids": [
+        [
+          "T1059.003",
+          11
+        ],
+        [
+          "T1105",
+          8
+        ],
+        [
+          "T1027",
+          8
+        ],
+        [
+          "T1106",
+          6
+        ],
+        [
+          "T1005",
+          5
+        ],
+        [
+          "T1033",
+          4
+        ],
+        [
+          "T1082",
+          4
+        ],
+        [
+          "T1140",
+          4
+        ],
+        [
+          "T1016",
+          4
+        ],
+        [
+          "T1083",
+          4
+        ],
+        [
+          "T1012",
+          3
+        ],
+        [
+          "T1057",
+          3
+        ],
+        [
+          "T1027.002",
+          3
+        ],
+        [
+          "T1547.001",
+          3
+        ],
+        [
+          "T1564.001",
+          3
+        ],
+        [
+          "T1047",
+          2
+        ],
+        [
+          "T1090",
+          2
+        ],
+        [
+          "T1112",
+          2
+        ],
+        [
+          "T1543.003",
+          2
+        ],
+        [
+          "T1036",
+          2
+        ]
+      ],
+      "first_miss_example": {
+        "index": 37,
+        "gold_ids": [
+          "T1106"
+        ],
+        "instruction_ids": [
+          "T1059.003",
+          "T1548.003",
+          "T1562.003"
+        ],
+        "missing_ids": [
+          "T1106"
+        ]
+      }
+    },
+    {
+      "file": "datasets/TechniqueRAG-Datasets/test/tram_fewshot_rankgpt_test.json",
+      "total_samples": 725,
+      "analyzable_samples": 725,
+      "samples_exactly_covered": 483,
+      "sample_exact_coverage_rate": 0.6662068965517242,
+      "gold_id_count": 851,
+      "covered_gold_id_count": 547,
+      "gold_id_recall_in_instruction": 0.6427732079905993,
+      "top_missing_ids": [
+        [
+          "T1071",
+          23
+        ],
+        [
+          "T1036",
+          15
+        ],
+        [
+          "T1059",
+          15
+        ],
+        [
+          "T1016",
+          14
+        ],
+        [
+          "T1027",
+          12
+        ],
+        [
+          "T1064",
+          12
+        ],
+        [
+          "T1083",
+          10
+        ],
+        [
+          "T1003",
+          10
+        ],
+        [
+          "T1204",
+          9
+        ],
+        [
+          "T1056",
+          9
+        ],
+        [
+          "T1573",
+          9
+        ],
+        [
+          "T1486",
+          8
+        ],
+        [
+          "T1074",
+          8
+        ],
+        [
+          "T1043",
+          7
+        ],
+        [
+          "T1598.002",
+          7
+        ],
+        [
+          "T1105",
+          7
+        ],
+        [
+          "T1140",
+          6
+        ],
+        [
+          "T1055",
+          6
+        ],
+        [
+          "T1087",
+          6
+        ],
+        [
+          "T1033",
+          6
+        ]
+      ],
+      "first_miss_example": {
+        "index": 8,
+        "gold_ids": [
+          "T1027",
+          "T1573"
+        ],
+        "instruction_ids": [
+          "T1573",
+          "T1573.001",
+          "T1573.002"
+        ],
+        "missing_ids": [
+          "T1027"
+        ]
+      }
+    },
+    {
+      "file": "datasets/TechniqueRAG-Datasets/train/all_fewshot_rankgpt_train.json",
+      "total_samples": 14936,
+      "analyzable_samples": 14936,
+      "samples_exactly_covered": 11773,
+      "sample_exact_coverage_rate": 0.7882297803963578,
+      "gold_id_count": 16263,
+      "covered_gold_id_count": 12608,
+      "gold_id_recall_in_instruction": 0.7752567177027608,
+      "top_missing_ids": [
+        [
+          "T1071",
+          140
+        ],
+        [
+          "T1105",
+          136
+        ],
+        [
+          "T1059",
+          105
+        ],
+        [
+          "T1082",
+          98
+        ],
+        [
+          "T1573",
+          94
+        ],
+        [
+          "T1064",
+          94
+        ],
+        [
+          "T1027",
+          92
+        ],
+        [
+          "T1059.003",
+          91
+        ],
+        [
+          "T1083",
+          89
+        ],
+        [
+          "T1036",
+          77
+        ],
+        [
+          "T1140",
+          61
+        ],
+        [
+          "T1059.001",
+          60
+        ],
+        [
+          "T1056",
+          57
+        ],
+        [
+          "T1016",
+          55
+        ],
+        [
+          "T1071.001",
+          53
+        ],
+        [
+          "T1070.004",
+          52
+        ],
+        [
+          "T1003",
+          48
+        ],
+        [
+          "T1057",
+          48
+        ],
+        [
+          "T1204",
+          47
+        ],
+        [
+          "T1005",
+          45
+        ]
+      ],
+      "first_miss_example": {
+        "index": 2,
+        "gold_ids": [
+          "T1070.004"
+        ],
+        "instruction_ids": [
+          "T1070.009",
+          "T1112",
+          "T1485"
+        ],
+        "missing_ids": [
+          "T1070.004"
+        ]
+      }
+    }
+  ]
+}
